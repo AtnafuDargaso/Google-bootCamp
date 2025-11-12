@@ -8,10 +8,8 @@ Original file is located at
 """
 
 """
-Aurora Bay RAG System - Final Working Version
-implemented RAG with BigQuery and Gemini
+Aurora Bay RAG System
 """
-
 import vertexai
 import pandas as pd
 from google.cloud import bigquery
@@ -28,6 +26,14 @@ DATASET_ID = "aurora_bay"
 TABLE_ID = "faqs"
 GENERATIVE_MODEL = "gemini-2.5-flash"
 
+# ============================================================================
+# SQL Sanitization Function - ADD THIS HERE
+# ============================================================================
+
+def sanitize_sql_input(text):
+    """Sanitize user input for SQL queries to prevent syntax errors"""
+    return text.replace("'", "''")
+
 # Initialize clients
 vertexai.init(project=PROJECT_ID, location=LOCATION)
 client = bigquery.Client(project=PROJECT_ID)
@@ -35,75 +41,97 @@ client = bigquery.Client(project=PROJECT_ID)
 print("🚀 Aurora Bay RAG System Initializing...")
 print(f"📍 Project: {PROJECT_ID}")
 print(f"📍 Location: {LOCATION}")
-print(f"🤖 Model: {GENERATIVE_MODEL}")
+print(f"🤖 Generative Model: {GENERATIVE_MODEL}")
 
 # ============================================================================
-# Step 1: Enhanced Semantic Search (Fixed SQL)
+# Step 1: Check Table Structure and Map Columns
 # ============================================================================
 
-def semantic_search(user_question, top_k=3):
-    """Enhanced semantic search using text matching with fixed SQL"""
+def analyze_table_structure():
+    """Analyze the actual table structure and map columns"""
+    try:
+        table_ref = f"{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}"
+        table = client.get_table(table_ref)
+
+        print("✅ Table structure detected:")
+        for field in table.schema:
+            print(f"   - {field.name}: {field.field_type}")
+
+        # Let's sample some data to understand the structure
+        sample_query = f"SELECT * FROM `{table_ref}` LIMIT 3"
+        sample_data = client.query(sample_query).to_dataframe()
+
+        print("\n📊 Sample data preview:")
+        print(sample_data)
+
+        # Based on typical FAQ structure, map columns
+        # string_field_0 is likely questions, string_field_1 is answers
+        return {
+            'question_col': 'string_field_0',
+            'answer_col': 'string_field_1'
+        }
+
+    except Exception as e:
+        print(f"❌ Table analysis failed: {e}")
+        return None
+
+# ============================================================================
+# Step 2: Fixed Semantic Search with Correct Column Names AND SANITIZATION
+# ============================================================================
+
+def semantic_search_fixed(user_question, top_k=3):
+    """Semantic search using correct column names with SQL sanitization"""
     print("🔍 Searching FAQs...")
 
-    # Fixed SQL query - much simpler and reliable
-    search_sql = f"""
-    SELECT
-        question,
-        answer,
-        -- Calculate relevance score based on text matching
-        CASE
-            WHEN LOWER(question) LIKE LOWER('%{user_question}%') THEN 0.95
-            WHEN LOWER(answer) LIKE LOWER('%{user_question}%') THEN 0.85
-            WHEN LOWER(question) LIKE LOWER('%{user_question.split()[0]}%') THEN 0.75
-            WHEN LOWER(answer) LIKE LOWER('%{user_question.split()[0]}%') THEN 0.65
-            ELSE 0.3
-        END as relevance_score,
-        (1 -
-            CASE
-                WHEN LOWER(question) LIKE LOWER('%{user_question}%') THEN 0.95
-                WHEN LOWER(answer) LIKE LOWER('%{user_question}%') THEN 0.85
-                WHEN LOWER(question) LIKE LOWER('%{user_question.split()[0]}%') THEN 0.75
-                WHEN LOWER(answer) LIKE LOWER('%{user_question.split()[0]}%') THEN 0.65
-                ELSE 0.3
-            END
-        ) as distance
-    FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
-    WHERE LOWER(question) LIKE LOWER('%{user_question}%')
-       OR LOWER(answer) LIKE LOWER('%{user_question}%')
-       OR LOWER(question) LIKE LOWER('%{user_question.split()[0]}%')
-       OR LOWER(answer) LIKE LOWER('%{user_question.split()[0]}%')
-    ORDER BY relevance_score DESC
-    LIMIT {top_k}
-    """
+    # SANITIZE THE USER INPUT - ADD THIS LINE
+    sanitized_question = sanitize_sql_input(user_question)
 
     try:
-        results = client.query(search_sql).to_dataframe()
-        return results
-    except Exception as e:
-        print(f"❌ Search error: {e}")
-
-        # Ultra-simple fallback
-        print("🔄 Using ultra-simple search fallback...")
-        simple_sql = f"""
+        # Fixed SQL with correct column names AND SANITIZED INPUT
+        search_sql = f"""
+        WITH scored_faqs AS (
+          SELECT
+            string_field_0 as question,
+            string_field_1 as answer,
+            -- Enhanced multi-factor relevance scoring
+            CASE
+              WHEN LOWER(string_field_0) LIKE LOWER('%{sanitized_question}%') THEN 0.95
+              WHEN LOWER(string_field_1) LIKE LOWER('%{sanitized_question}%') THEN 0.85
+              WHEN LOWER(CONCAT(string_field_0, ' ', string_field_1)) LIKE LOWER('%{sanitized_question}%') THEN 0.80
+              WHEN REGEXP_CONTAINS(LOWER(string_field_0), r'(?i)\\b({'|'.join(sanitized_question.lower().split())})\\b') THEN 0.75
+              WHEN REGEXP_CONTAINS(LOWER(string_field_1), r'(?i)\\b({'|'.join(sanitized_question.lower().split())})\\b') THEN 0.65
+              ELSE 0.1
+            END as relevance_score
+          FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+        )
         SELECT
-            question,
-            answer,
-            0.8 as relevance_score,
-            0.2 as distance
-        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
-        WHERE LOWER(question) LIKE LOWER('%{user_question}%')
-           OR LOWER(answer) LIKE LOWER('%{user_question}%')
+          question,
+          answer,
+          relevance_score,
+          (1 - relevance_score) as distance
+        FROM scored_faqs
+        WHERE relevance_score > 0.5  -- Higher threshold to filter out weak matches
+        ORDER BY relevance_score DESC
         LIMIT {top_k}
         """
-        try:
-            results = client.query(simple_sql).to_dataframe()
-            return results
-        except Exception as e2:
-            print(f"❌ Simple search also failed: {e2}")
-            return pd.DataFrame()
+
+        results = client.query(search_sql).to_dataframe()
+
+        if not results.empty:
+            print(f"✅ Found {len(results)} relevant FAQs")
+            for i, (_, row) in enumerate(results.iterrows(), 1):
+                print(f"   {i}. {row['question'][:60]}... (score: {row['relevance_score']:.3f})")
+        else:
+            print("❌ No highly relevant FAQs found")
+
+        return results
+
+    except Exception as e:
+        print(f"❌ Search error: {e}")
+        return pd.DataFrame()
 
 # ============================================================================
-# Step 2: RAG Chatbot Class
+# Step 3: Enhanced RAG Chatbot Class
 # ============================================================================
 
 class AuroraBayChatbot:
@@ -112,7 +140,7 @@ class AuroraBayChatbot:
     def __init__(self):
         try:
             self.model = GenerativeModel(GENERATIVE_MODEL)
-            print("🤖 Aurora Bay Chatbot initialized")
+            print("🤖 Aurora Bay Chatbot initialized successfully")
         except Exception as e:
             print(f"❌ Model initialization failed: {e}")
             self.model = None
@@ -126,34 +154,35 @@ class AuroraBayChatbot:
 
             QUESTION: {user_question}
 
-            Please provide a helpful response based on general knowledge of town services,
-            but note that this information may not be specific to Aurora Bay, Alaska.
+            Please provide a helpful response but clearly state that specific Aurora Bay information is not available.
+            Always direct users to contact the Aurora Bay Town Hall for official information.
             """
 
-        context = "AURORA BAY FAQ INFORMATION:\n\n"
+        context = "OFFICIAL AURORA BAY FAQ INFORMATION:\n\n"
         for i, (_, faq) in enumerate(relevant_faqs.iterrows(), 1):
-            relevance_score = 1 - faq['distance']
-            context += f"FAQ {i} (Relevance: {relevance_score:.1%}):\n"
+            similarity_score = faq['relevance_score']
+            context += f"FAQ {i} (Relevance: {similarity_score:.1%}):\n"
             context += f"QUESTION: {faq['question']}\n"
-            context += f"ANSWER: {faq['answer']}\n\n"
+            context += f"OFFICIAL ANSWER: {faq['answer']}\n\n"
 
         prompt = f"""
-        ROLE: You are an official assistant for Aurora Bay, Alaska providing accurate information about town services, locations, and procedures.
+        ROLE: You are an official assistant for Aurora Bay, Alaska. Your responses must be accurate and based ONLY on the provided official information.
 
-        CONTEXT INFORMATION:
+        OFFICIAL AURORA BAY FAQ CONTEXT:
         {context.rstrip()}
 
         USER QUESTION: {user_question}
 
-        INSTRUCTIONS:
-        1. Answer the question using ONLY the provided Aurora Bay FAQ context
-        2. If the exact answer is in the context, provide it accurately
-        3. If the context has related information, use it to provide a helpful answer
+        CRITICAL INSTRUCTIONS:
+        1. Answer using ONLY the provided Aurora Bay FAQ context
+        2. If the exact answer is in the context, provide it accurately and completely
+        3. If the context has related information, synthesize it to answer the question
         4. If the context doesn't contain the specific information, say: "I don't have specific information about this in the Aurora Bay FAQs. Please contact the Town Hall at (907) 555-0123 for assistance."
-        5. Be precise about locations, procedures, and contact information
-        6. Keep responses clear and concise
+        5. Never make up or hallucinate information
+        6. Be specific about locations, procedures, and contact details when available
+        7. Keep responses clear and helpful
 
-        RESPONSE:
+        OFFICIAL RESPONSE:
         """
 
         return prompt
@@ -164,33 +193,15 @@ class AuroraBayChatbot:
         print(f"\n🧑‍💼 USER: {user_question}")
 
         # Search for relevant FAQs
-        relevant_faqs = semantic_search(user_question)
-
-        if not relevant_faqs.empty:
-            print(f"✅ Found {len(relevant_faqs)} relevant FAQs")
-            for i, (_, faq) in enumerate(relevant_faqs.iterrows(), 1):
-                score = 1 - faq['distance']
-                print(f"   {i}. {faq['question'][:60]}... (score: {score:.3f})")
-        else:
-            print("❌ No relevant FAQs found")
+        relevant_faqs = semantic_search_fixed(user_question)
 
         # Build and execute prompt
         rag_prompt = self.build_context_prompt(user_question, relevant_faqs)
 
-        print("🤖 Generating response...")
+        print("🤖 Generating response with Gemini...")
 
         if self.model is None:
-            # Provide direct answers from the search results
-            print(f"\n🏛️  AURORA BAY ASSISTANT (Direct from FAQs):")
-            print("=" * 60)
-            if not relevant_faqs.empty:
-                best_answer = relevant_faqs.iloc[0]['answer']
-                print(best_answer)
-            else:
-                print(f"I don't have specific information about '{user_question}' in the Aurora Bay FAQs.")
-                print("Please contact Aurora Bay Town Hall at (907) 555-0123 for assistance.")
-            print("=" * 60)
-            return
+            return self._fallback_response(user_question, relevant_faqs)
 
         try:
             response = self.model.generate_content(rag_prompt)
@@ -203,41 +214,116 @@ class AuroraBayChatbot:
             return {
                 "success": True,
                 "response": response.text,
-                "relevant_faqs_count": len(relevant_faqs)
+                "relevant_faqs_count": len(relevant_faqs),
+                "method": "rag_with_gemini"
             }
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
-            print(f"❌ {error_msg}")
+            print(f"❌ Gemini error: {e}")
+            return self._fallback_response(user_question, relevant_faqs)
 
-            # Provide direct answers from search results as fallback
-            print(f"\n🏛️  AURORA BAY ASSISTANT (Direct from FAQs):")
-            print("=" * 60)
-            if not relevant_faqs.empty:
-                print("Based on Aurora Bay FAQs:")
-                for i, (_, faq) in enumerate(relevant_faqs.iterrows(), 1):
-                    print(f"\n{i}. {faq['question']}")
-                    print(f"   {faq['answer']}")
-            else:
-                print(f"I don't have specific information about '{user_question}' in the Aurora Bay FAQs.")
-                print("\nPlease contact Aurora Bay Town Hall for assistance:")
-                print("📍 123 Main Street, Aurora Bay, AK")
-                print("📞 (907) 555-0123")
-                print("📧 info@aurorabay.gov")
-                print("🕐 Monday-Friday 8:00 AM - 5:00 PM")
-            print("=" * 60)
+    def _fallback_response(self, user_question, relevant_faqs):
+        """Provide fallback response when Gemini fails"""
+        print(f"\n🏛️  AURORA BAY ASSISTANT (Direct FAQ Results):")
+        print("=" * 60)
+        if not relevant_faqs.empty:
+            print("Based on Aurora Bay FAQs:")
+            for i, (_, faq) in enumerate(relevant_faqs.iterrows(), 1):
+                print(f"\n{i}. Q: {faq['question']}")
+                print(f"   A: {faq['answer']}")
+        else:
+            print(f"I don't have specific information about '{user_question}' in the Aurora Bay FAQs.")
+            print("\nFor official information, please contact:")
+            print("📍 Aurora Bay Town Hall")
+            print("📞 (907) 555-0123")
+            print("📧 info@aurorabay.gov")
+            print("🕐 Monday-Friday 8:00 AM - 5:00 PM")
+        print("=" * 60)
 
-            return {"success": False, "error": error_msg}
+        return {
+            "success": False,
+            "relevant_faqs_count": len(relevant_faqs),
+            "method": "direct_faq"
+        }
 
 # ============================================================================
-# Main Execution and Testing
+# Step 4: Test FAQ Retrieval with Correct Columns
+# ============================================================================
+
+def test_faq_retrieval_fixed():
+    """Test if we can retrieve specific FAQs from the database with correct columns"""
+    print("\n🧪 TESTING FAQ RETRIEVAL WITH CORRECT COLUMNS")
+    print("=" * 60)
+
+    test_queries = [
+        "town hall",
+        "business license",
+        "power outage",
+        "recycling",
+        "council meetings",
+        "building permit",
+        "pet adoption",
+        "water bill",
+        "trash collection",
+        "parks"
+    ]
+
+    for query in test_queries:
+        print(f"\nSearching for: '{query}'")
+        results = semantic_search_fixed(query, top_k=2)
+        if not results.empty:
+            for i, (_, row) in enumerate(results.iterrows(), 1):
+                print(f"   {i}. {row['question'][:50]}... (score: {row['relevance_score']:.3f})")
+        else:
+            print("   No results found")
+
+# ============================================================================
+# Step 5: Explore Table Content
+# ============================================================================
+
+def explore_table_content():
+    """Explore what's actually in the table"""
+    print("\n🔍 EXPLORING TABLE CONTENT")
+    print("=" * 60)
+
+    try:
+        # Get sample data to understand content
+        explore_query = f"""
+        SELECT
+          string_field_0 as potential_question,
+          string_field_1 as potential_answer,
+          LENGTH(string_field_0) as question_length,
+          LENGTH(string_field_1) as answer_length
+        FROM `{PROJECT_ID}.{DATASET_ID}.{TABLE_ID}`
+        LIMIT 10
+        """
+
+        sample_data = client.query(explore_query).to_dataframe()
+        print("Sample rows from the table:")
+        for i, (_, row) in enumerate(sample_data.iterrows(), 1):
+            print(f"\n{i}. QUESTION: {row['potential_question'][:80]}...")
+            print(f"   ANSWER: {row['potential_answer'][:80]}...")
+
+        return True
+    except Exception as e:
+        print(f"❌ Exploration failed: {e}")
+        return False
+
+# ============================================================================
+# Step 6: Main Execution and Testing
 # ============================================================================
 
 def main():
     """Run complete RAG system testing"""
 
-    print("🚀 AURORA BAY RAG SYSTEM - FINAL TESTING")
+    print("🚀 AURORA BAY RAG SYSTEM - FIXED VERSION")
     print("=" * 60)
+
+    # First, explore the table content
+    explore_table_content()
+
+    # Test FAQ retrieval with correct columns
+    test_faq_retrieval_fixed()
 
     # Initialize chatbot
     print("\n🤖 Initializing RAG Chatbot...")
@@ -257,7 +343,7 @@ def main():
         "Where can I find information about local parks?"
     ]
 
-    print(f"\n🧪 Testing with {len(test_questions)} questions...")
+    print(f"\n🧪 TESTING RAG SYSTEM WITH {len(test_questions)} QUESTIONS")
     print("=" * 60)
 
     successful_responses = 0
@@ -277,22 +363,9 @@ def main():
     print("📊 PERFORMANCE SUMMARY:")
     print(f"   ✅ Successful Gemini responses: {successful_responses}/10")
     print(f"   🔍 Questions with relevant FAQs: {found_faqs_count}/10")
-    print(f"   📚 Total FAQs in database: 50")
     print(f"   🤖 Model: {GENERATIVE_MODEL}")
     print(f"   📍 Project: {PROJECT_ID}")
     print("=" * 60)
-
-    # Show some key findings
-    print("\n🔍 KEY FINDINGS:")
-    print("   • System successfully retrieves relevant FAQs (e.g., power outage)")
-    print("   • Provides specific Aurora Bay information when available")
-    print("   • Falls back gracefully when information not in FAQs")
-    print("   • Uses Gemini for natural language responses")
-    print("   • Implements full RAG pipeline in BigQuery")
-
-# Run the system
-if __name__ == "__main__":
-    main()
 
 # ============================================================================
 # Interactive Chat Session
@@ -308,6 +381,7 @@ def interactive_chat():
     print("  - 'Where is the animal shelter?'")
     print("  - 'How do I pay utilities?'")
     print("  - 'What are the park hours?'")
+    print("  - 'Business license requirements'")
     print("="*60)
 
     chatbot = AuroraBayChatbot()
@@ -324,8 +398,13 @@ def interactive_chat():
 
         chatbot.ask_question(user_input)
 
-# Uncomment to start interactive session after testing
-print("\n" + "="*60)
-print("🚀 Starting Interactive Chat Session...")
-print("="*60)
-interactive_chat()
+# Run the complete system
+if __name__ == "__main__":
+    # Run automated tests first
+    main()
+
+    # Then start interactive session
+    print("\n" + "="*60)
+    print("🚀 Starting Interactive Chat Session...")
+    print("="*60)
+    interactive_chat()
