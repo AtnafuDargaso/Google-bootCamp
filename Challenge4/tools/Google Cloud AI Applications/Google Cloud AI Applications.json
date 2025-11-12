@@ -1,0 +1,40 @@
+{
+  "name": "9982e531-2151-4f07-ba64-af4652324b0d",
+  "displayName": "Google Cloud AI Applications",
+  "dataStoreSpec": {
+    "dataStoreConnections": [ {
+      "dataStoreType": "UNSTRUCTURED",
+      "dataStore": "projects/188880374020/locations/us/collections/default_collection/dataStores/aurora-bay-faqs_1762984201232",
+      "documentProcessingMode": "DOCUMENTS",
+      "engineType": "CHAT_ENGINE",
+      "connectorConfig": {
+      
+      },
+      "createTime": {
+        "seconds": 1762984205,
+        "nanos": 300061000
+      },
+      "displayName": "aurora-bay-faqs",
+      "dialogflowAddTime": {
+        "seconds": 1762984506,
+        "nanos": 954000000
+      }
+    } ],
+    "models": {
+      "summarizationModel": {
+        "model": "default"
+      },
+      "rewriterModel": {
+        "model": "default"
+      }
+    },
+    "groundingSettings": {
+    
+    },
+    "payloadSettings": {
+    
+    },
+    "mode": "MODE_DEFAULT"
+  },
+  "toolType": "CUSTOMIZED_TOOL"
+}

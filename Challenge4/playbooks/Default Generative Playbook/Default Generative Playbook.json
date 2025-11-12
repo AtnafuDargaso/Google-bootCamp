@@ -1,0 +1,15 @@
+{
+  "name": "00000000-0000-0000-0000-000000000000",
+  "displayName": "Default Generative Playbook",
+  "goal": "Help residents of Aurora Bay, Alaska find answers to common town-related questions such as utilities, permits, services, and community events.",
+  "tokenCount": 62,
+  "instruction": {
+    "steps": [ {
+      "text": "Use information from the provided data store to answer accurately. If a question isn’t covered in the data, politely inform the user that the information is unavailable."
+    } ]
+  },
+  "playbookType": "ROUTINE",
+  "codeBlock": {
+  
+  }
+}
