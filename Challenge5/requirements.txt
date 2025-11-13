@@ -1,7 +1,0 @@
-google-cloud-aiplatform
-google-cloud-bigquery
-google-cloud-storage
-streamlit
-pandas
-numpy
-pytest
